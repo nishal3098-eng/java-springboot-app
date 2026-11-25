@@ -1,11 +1,6 @@
+
 pipeline {
     agent any
-
-    options {
-        skipDefaultCheckout(true)
-        disableConcurrentBuilds()
-        timestamps()
-    }
 
     environment {
         DOCKER_IMAGE = 'nishal3098/taskflow'
@@ -15,17 +10,28 @@ pipeline {
         KUBECONFIG = '/var/lib/jenkins/.kube/config'
     }
 
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        skipDefaultCheckout(true)
+    }
+
+    triggers {
+        githubPush()
+    }
+
     stages {
 
         stage('Git Checkout') {
             steps {
-                checkout scm
+                git branch: 'main',
+                    url: 'https://github.com/nishal3098-eng/java-springboot-app.git'
             }
         }
 
         stage('Maven Build and Test') {
             steps {
-                sh 'mvn clean verify'
+                sh 'mvn -B clean verify'
             }
         }
 
@@ -33,7 +39,7 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarQube') {
                     sh '''
-                        mvn sonar:sonar \
+                        mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.1.0.4751:sonar \
                         -Dsonar.projectKey=taskflow \
                         -Dsonar.projectName=TaskFlow
                     '''
@@ -43,7 +49,7 @@ pipeline {
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 10, unit: 'MINUTES') {
+                timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate(
                         abortPipeline: true,
                         webhookSecretId: 'sonarqube-webhook-secret'
@@ -56,6 +62,7 @@ pipeline {
             steps {
                 sh '''
                     docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} .
+                    docker images ${DOCKER_IMAGE}
                 '''
             }
         }
@@ -65,18 +72,17 @@ pipeline {
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
                     sh '''
                         set +x
-                        echo "$DOCKER_PASS" | docker login \
-                            -u "$DOCKER_USER" --password-stdin
-
-                        trap 'docker logout' EXIT
+                        echo "$DOCKER_PASSWORD" | docker login \
+                        -u "$DOCKER_USERNAME" --password-stdin
 
                         docker push ${DOCKER_IMAGE}:${IMAGE_TAG}
+                        docker logout
                     '''
                 }
             }
@@ -86,13 +92,17 @@ pipeline {
             steps {
                 sh '''
                     aws eks update-kubeconfig \
-                        --region ${AWS_REGION} \
-                        --name ${EKS_CLUSTER}
-
-                    sed -i "s|image: nishal3098/taskflow:1.0|image: ${DOCKER_IMAGE}:${IMAGE_TAG}|" \
-                        k8s/deployment.yaml
+                    --region ${AWS_REGION} \
+                    --name ${EKS_CLUSTER}
 
                     ansible-playbook -i localhost, ansible/deploy.yaml
+
+                    kubectl set image deployment/taskflow \
+                    taskflow=${DOCKER_IMAGE}:${IMAGE_TAG} \
+                    -n default
+
+                    kubectl rollout status deployment/taskflow \
+                    -n default --timeout=300s
                 '''
             }
         }
@@ -100,17 +110,18 @@ pipeline {
         stage('Kubernetes Verification') {
             steps {
                 sh '''
-                    kubectl rollout status deployment/taskflow \
-                        -n default --timeout=300s
-
                     kubectl get deployments -n default
                     kubectl get pods -n default -o wide
-                    kubectl get svc -n default
+                    kubectl get services -n default
+
+                    kubectl get endpointslices -n default \
+                    -l kubernetes.io/service-name=taskflow-service
 
                     kubectl get deployment taskflow -n default \
-                        -o jsonpath='{.spec.template.spec.containers[0].image}'
+                    -o jsonpath='{.spec.template.spec.containers[*].image}'
 
-                    echo
+                    echo ""
+                    echo "TaskFlow deployment verified successfully."
                 '''
             }
         }
@@ -118,15 +129,17 @@ pipeline {
 
     post {
         success {
-            echo 'SUCCESS: TaskFlow deployed to Amazon EKS.'
+            echo 'CI/CD Pipeline completed successfully!'
+            echo "Deployed image: ${DOCKER_IMAGE}:${IMAGE_TAG}"
         }
 
         failure {
-            echo 'FAILED: Check Jenkins console output.'
+            echo 'CI/CD Pipeline failed. Check the console output.'
         }
 
         always {
-            echo 'CI/CD pipeline execution completed.'
+            sh 'docker logout || true'
+            echo 'Pipeline execution completed.'
         }
     }
 }
