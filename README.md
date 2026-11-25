@@ -27,3 +27,4 @@ Create an empty repository, then run:
 
 ## Scope
 Tasks are stored in Java memory, not a database. Restarting loses tasks; multiple replicas have separate data. Use one replica for this demo. No authentication; do not expose publicly with sensitive data. Jenkins, SonarQube, Ansible and Kubernetes configurations will be added during later stages. Build/runtime not verified in the generation environment.
+Automated CI/CD pipeline using Jenkins, SonarQube, Docker Hub, Ansible and Amazon EKS.
