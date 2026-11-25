@@ -1,0 +1,38 @@
+---
+- name: Deploy TaskFlow application to Amazon EKS
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    kubeconfig_path: /var/lib/jenkins/.kube/config
+
+  tasks:
+    - name: Deploy Spring Boot application
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        src: "{{ playbook_dir }}/../k8s/deployment.yaml"
+        wait: true
+        wait_timeout: 300
+
+    - name: Create Kubernetes service
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        src: "{{ playbook_dir }}/../k8s/service.yaml"
+
+    - name: Verify application pods
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Pod
+        namespace: default
+        label_selectors:
+          - app=taskflow
+      register: taskflow_pods
+
+    - name: Display application pod status
+      ansible.builtin.debug:
+        msg: "{{ item.metadata.name }} - {{ item.status.phase }}"
+      loop: "{{ taskflow_pods.resources }}"
